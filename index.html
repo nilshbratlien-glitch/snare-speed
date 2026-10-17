@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Snare Speed</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#111111">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f0f0f;
+      color: #eee;
+      padding: 16px;
+      max-width: 480px;
+      margin: 0 auto;
+    }
+    h1 { font-size: 1.4rem; margin: 0 0 16px; text-align: center; }
+    .bpm {
+      font-size: 5rem;
+      font-weight: 700;
+      text-align: center;
+      margin: 8px 0;
+      letter-spacing: -2px;
+    }
+    .status {
+      text-align: center;
+      color: #888;
+      margin-bottom: 16px;
+      min-height: 1.2em;
+    }
+    .sticking {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      font-size: 1.8rem;
+      font-weight: 600;
+      margin: 16px 0;
+      min-height: 2.2rem;
+      flex-wrap: wrap;
+    }
+    .sticking span {
+      padding: 4px 10px;
+      border-radius: 6px;
+      background: #222;
+      min-width: 36px;
+      text-align: center;
+    }
+    .sticking span.active {
+      background: #f0c040;
+      color: #111;
+    }
+    .controls {
+      display: grid;
+      gap: 12px;
+      margin-top: 16px;
+    }
+    label {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.95rem;
+    }
+    input[type="number"], select {
+      width: 90px;
+      padding: 8px;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      color: #eee;
+      border-radius: 6px;
+      font-size: 1rem;
+    }
+    button {
+      padding: 14px;
+      font-size: 1.1rem;
+      border: none;
+      border-radius: 8px;
+      background: #2a2a2a;
+      color: #eee;
+      cursor: pointer;
+    }
+    button.primary {
+      background: #f0c040;
+      color: #111;
+      font-weight: 600;
+    }
+    button:disabled { opacity: 0.5; }
+    .row {
+      display: flex;
+      gap: 8px;
+    }
+    .row button { flex: 1; }
+    .best {
+      text-align: center;
+      margin-top: 12px;
+      color: #aaa;
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>Snare Speed</h1>
+  <div class="bpm" id="bpmDisplay">120</div>
+  <div class="status" id="status">Ready</div>
+  <div class="sticking" id="sticking"></div>
+
+  <div class="controls">
+    <label>Rudiment
+      <select id="rudiment">
+        <option value="singles">Singles (RLRL)</option>
+        <option value="doubles">Doubles (RRLL)</option>
+        <option value="paradiddle">Paradiddle (RLRR LRLL)</option>
+        <option value="flam">Flam (lR rL)</option>
+        <option value="accentSingles">Accented Singles</option>
+      </select>
+    </label>
+    <label>Start BPM
+      <input type="number" id="startBpm" value="100" min="40" max="300">
+    </label>
+    <label>Increment
+      <input type="number" id="increment" value="2" min="1" max="10">
+    </label>
+    <label>Bars per step
+      <input type="number" id="barsPerStep" value="4" min="1" max="32">
+    </label>
+    <label>Subdivision
+      <select id="subdivision">
+        <option value="4">Quarter</option>
+        <option value="8" selected>Eighth</option>
+        <option value="16">Sixteenth</option>
+      </select>
+    </label>
+    <div class="row">
+      <button id="startBtn" class="primary">Start</button>
+      <button id="stopBtn" disabled>Stop</button>
+    </div>
+    <div class="row">
+      <button id="markClean">Mark Clean</button>
+      <button id="markBroke">Mark Broke</button>
+    </div>
+  </div>
+  <div class="best" id="best">Best: —</div>
+
+  <script>
+    const rudiments = {
+      singles: "R L R L".split(" "),
+      doubles: "R R L L".split(" "),
+      paradiddle: "R L R R L R L L".split(" "),
+      flam: "lR rL".split(" "),
+      accentSingles: "R L R L".split(" ")
+    };
+
+    let audioCtx = null;
+    let isPlaying = false;
+    let nextNoteTime = 0;
+    let currentBeat = 0;
+    let barCount = 0;
+    let timerId = null;
+    let currentBpm = 100;
+    let patternIndex = 0;
+    let personalBests = JSON.parse(localStorage.getItem("snareBests") || "{}");
+
+    const bpmDisplay = document.getElementById("bpmDisplay");
+    const statusEl = document.getElementById("status");
+    const stickingEl = document.getElementById("sticking");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const bestEl = document.getElementById("best");
+
+    function getSettings() {
+      return {
+        start: +document.getElementById("startBpm").value,
+        inc: +document.getElementById("increment").value,
+        bars: +document.getElementById("barsPerStep").value,
+        sub: +document.getElementById("subdivision").value,
+        rudiment: document.getElementById("rudiment").value
+      };
+    }
+
+    function updateBestDisplay() {
+      const r = document.getElementById("rudiment").value;
+      const best = personalBests[r];
+      bestEl.textContent = best ? `Best (${r}): ${best} BPM` : "Best: —";
+    }
+
+    function renderSticking(pattern, active) {
+      stickingEl.innerHTML = pattern.map((s, i) =>
+        `<span class="${i === active ? "active" : ""}">${s}</span>`
+      ).join("");
+    }
+
+    function scheduleClick(time, isAccent) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.frequency.value = isAccent ? 1200 : 800;
+      gain.gain.setValueAtTime(isAccent ? 0.35 : 0.2, time);
+      gain.gain.exponentialRampToValueAtTime(0.001, time + 0.04);
+      osc.start(time);
+      osc.stop(time + 0.05);
+    }
+
+    function scheduler() {
+      const settings = getSettings();
+      const secondsPerBeat = 60 / currentBpm;
+      const notesPerBeat = settings.sub / 4;
+      const secondsPerNote = secondsPerBeat / notesPerBeat;
+
+      while (nextNoteTime < audioCtx.currentTime + 0.1) {
+        const isDownbeat = currentBeat % notesPerBeat === 0;
+        scheduleClick(nextNoteTime, isDownbeat && (currentBeat / notesPerBeat) % 4 === 0);
+
+        const pattern = rudiments[settings.rudiment] || rudiments.singles;
+        patternIndex = Math.floor(currentBeat) % pattern.length;
+        renderSticking(pattern, patternIndex);
+
+        nextNoteTime += secondsPerNote;
+        currentBeat++;
+
+        if (currentBeat % (notesPerBeat * 4) === 0) {
+          barCount++;
+          if (barCount >= settings.bars) {
+            currentBpm += settings.inc;
+            bpmDisplay.textContent = currentBpm;
+            barCount = 0;
+            statusEl.textContent = `Increased to ${currentBpm}`;
+          }
+        }
+      }
+      timerId = setTimeout(scheduler, 25);
+    }
+
+    function start() {
+      if (isPlaying) return;
+      const settings = getSettings();
+      currentBpm = settings.start;
+      bpmDisplay.textContent = currentBpm;
+      barCount = 0;
+      currentBeat = 0;
+      patternIndex = 0;
+      statusEl.textContent = "Playing…";
+
+      if (!audioCtx) audioCtx = new AudioContext();
+      if (audioCtx.state === "suspended") audioCtx.resume();
+
+      nextNoteTime = audioCtx.currentTime + 0.05;
+      isPlaying = true;
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+      scheduler();
+      renderSticking(rudiments[settings.rudiment], 0);
+    }
+
+    function stop() {
+      if (!isPlaying) return;
+      clearTimeout(timerId);
+      isPlaying = false;
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      statusEl.textContent = "Stopped";
+    }
+
+    function markClean() {
+      const r = document.getElementById("rudiment").value;
+      if (!personalBests[r] || currentBpm > personalBests[r]) {
+        personalBests[r] = currentBpm;
+        localStorage.setItem("snareBests", JSON.stringify(personalBests));
+        updateBestDisplay();
+        statusEl.textContent = `New best: ${currentBpm}`;
+      }
+    }
+
+    function markBroke() {
+      statusEl.textContent = "Marked broke";
+    }
+
+    startBtn.onclick = start;
+    stopBtn.onclick = stop;
+    document.getElementById("markClean").onclick = markClean;
+    document.getElementById("markBroke").onclick = markBroke;
+    document.getElementById("rudiment").onchange = updateBestDisplay;
+
+    updateBestDisplay();
+
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    }
+  </script>
+</body>
+</html>
